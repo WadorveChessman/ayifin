@@ -1,0 +1,14 @@
+{
+  "name": "AYIFIN — Ayiti Finans",
+  "short_name": "AYIFIN",
+  "description": "Gestion de microfinance multi-utilisateur",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0b1f4b",
+  "theme_color": "#0b1f4b",
+  "lang": "fr",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
