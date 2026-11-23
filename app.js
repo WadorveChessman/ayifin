@@ -1,6 +1,6 @@
 'use strict';
-/* AYIFIN — Ayiti Finans — v3.0 (Supabase)
-   Multi-utilisateur temps réel. Toutes les données viennent de Supabase. */
+/* AYIFIN — Ayiti Finans — v3.2
+   Connexion robuste + Supabase multi-utilisateur. */
 
 /* ============================================================
    SECTION 1 — UTILITAIRES
@@ -33,14 +33,25 @@ let realtimeChannel = null;
 /* ============================================================
    SECTION 3 — UI
    ============================================================ */
-function toast(m,err){const t=$('#toast');if(!t){console.log(m);return}t.textContent=m;t.className=err?'err show':'show';clearTimeout(toast.t);toast.t=setTimeout(()=>t.className='',3600)}
+function toast(m,err){
+  const t=$('#toast');
+  if(!t){console.log('[toast]',m);return}
+  t.textContent=m;t.className=err?'err show':'show';
+  clearTimeout(toast.t);toast.t=setTimeout(()=>t.className='',3600);
+}
 const modal=h=>{const m=$('#modal');if(!m)return;m.innerHTML=`<div class="sheet">${h}</div>`;m.hidden=false};
 const closeM=()=>{const m=$('#modal');if(m)m.hidden=true};
 
 /* ============================================================
    SECTION 4 — THÈME
    ============================================================ */
-function theme(){try{const t=localStorage.getItem(T)||'auto';const dark=t==='dark'||(t==='auto'&&matchMedia('(prefers-color-scheme:dark)').matches);document.documentElement.dataset.theme=dark?'dark':'light'}catch(e){}}
+function theme(){
+  try{
+    const t=localStorage.getItem(T)||'auto';
+    const dark=t==='dark'||(t==='auto'&&matchMedia('(prefers-color-scheme:dark)').matches);
+    document.documentElement.dataset.theme=dark?'dark':'light';
+  }catch(e){}
+}
 
 /* ============================================================
    SECTION 5 — CHARGEMENT DES DONNÉES
@@ -63,27 +74,66 @@ async function loadAll(){
 
 async function initSession(){
   try{
+    /* 1. Vérifier la session Supabase */
     const session = await sbGetSession();
-    if(!session){ render(); return; }
-    const profile = await sbLoadProfile();
-    if(!profile || !profile.entreprises){
-      await sbSignOut();
-      render(); return;
+    if(!session){
+      console.warn('initSession: pas de session Supabase');
+      render();
+      return;
     }
+    console.log('initSession: session OK pour', session.user?.email);
+
+    /* 2. Charger le profil (table public.users) */
+    let profile = null;
+    try {
+      profile = await sbLoadProfile();
+    } catch(err){
+      console.error('initSession: sbLoadProfile a échoué', err);
+    }
+
+    /* 3. Si le profil manque, on NE déconnecte PAS — on affiche un message clair */
+    if(!profile){
+      console.warn('initSession: profil public.users manquant pour', session.user?.email);
+      const user = await sbGetUser();
+      db.user = {
+        id: user.id,
+        username: user.email,
+        role: 'AGENT',
+        entreprise_id: null
+      };
+      db.entreprise = null;
+      toast('Connexion OK mais profil absent dans public.users. Voir la console.', 1);
+      render();
+      return;
+    }
+
+    /* 4. Si l'entreprise manque, message clair */
+    if(!profile.entreprises){
+      console.warn('initSession: entreprise manquante pour le profil', profile);
+      db.user = profile;
+      db.entreprise = null;
+      toast('Aucune entreprise liée à votre compte.', 1);
+      render();
+      return;
+    }
+
+    /* 5. Succès */
     db.user = profile;
     db.entreprise = profile.entreprises;
     await loadAll();
     subscribeRealtime();
     render();
   }catch(err){
-    console.error('initSession:',err);
+    console.error('initSession:', err);
+    toast('Erreur d\'initialisation : ' + (err?.message||''), 1);
     render();
   }
 }
 
 function subscribeRealtime(){
-  if(realtimeChannel) sb.removeChannel(realtimeChannel);
-  realtimeChannel = sbSubscribe(db.entreprise.id, async (table)=>{
+  if(!db.entreprise) return;
+  if(realtimeChannel){ try{ sb.removeChannel(realtimeChannel); }catch(e){} realtimeChannel=null; }
+  realtimeChannel = sbSubscribe(db.entreprise.id, async ()=>{
     await loadAll();
     render();
   });
@@ -188,13 +238,14 @@ const loginV=()=>`
   <h1>AYIFIN</h1>
   <p>Ayiti Finans — Gestion de microfinance</p>
   <form id="flogin" class="form">
-    <label>Email<input name="email" type="email" required autocomplete="username"></label>
-    <label>Mot de passe<input name="pw" type="password" required autocomplete="current-password"></label>
+    <label>Email<input name="email" type="email" required autocomplete="username" value="admin@ayifin.com"></label>
+    <label>Mot de passe<input name="pw" type="password" required autocomplete="current-password" value="Admin@2025!"></label>
     <button class="btn big" type="submit">Se connecter</button>
   </form>
-  <p style="text-align:center;margin-top:16px;font-size:.85rem;color:var(--mu)">
-    Compte par défaut : <b>admin@ayifin.com</b> / <b>Admin@2025!</b>
-  </p>
+  <div style="margin-top:20px;padding:12px;background:var(--bg);border-radius:10px;font-size:.8rem;color:var(--mu)">
+    <b>🔑 Admin local (toujours disponible)</b><br>
+    <code>admin@ayifin.com</code> / <code>Admin@2025!</code>
+  </div>
 </div>`;
 
 V.dashboard=()=>{
@@ -397,30 +448,44 @@ V.settings=()=>{
 const SUB={
   async flogin(f,d){
     try{
-      await sbSignIn(d.email,d.pw);
+      const {user} = await sbSignIn(d.email, d.pw);
+      console.log('Login Supabase OK pour', user?.email);
       toast('Connexion réussie.');
+
+      /* Petit délai pour laisser Supabase propager la session */
+      await new Promise(r => setTimeout(r, 300));
+
       await initSession();
+
+      /* Si db.user n'est toujours pas défini → problème de profil */
+      if(!db.user){
+        toast('Connexion OK mais profil absent dans public.users. Vérifiez la table.', 1);
+      }
     }catch(e){
-      toast('Erreur : '+(e.message||'connexion'),1);
+      console.error('flogin:', e);
+      const msg = e?.message || '';
+      if(msg.includes('Invalid login credentials')){
+        toast('Identifiants incorrects. Vérifiez Supabase → Authentication → Users.',1);
+      } else if(msg.includes('Email not confirmed')){
+        toast('Email non confirmé. Confirmez-le dans Supabase.',1);
+      } else {
+        toast('Erreur : '+msg,1);
+      }
     }
   },
   async fclient(f,d){
     try{
       const id=d.client_id||'';
+      const payload = {
+        nom_complet:d.nom_complet,nif_cin:d.nif_cin,telephone:d.telephone,
+        email:d.email,adresse:d.adresse,ville:d.ville,
+        date_naissance:d.date_naissance||null,sexe:d.sexe,profession:d.profession
+      };
       if(id){
-        const {error}=await sb.from('clients').update({
-          nom_complet:d.nom_complet,nif_cin:d.nif_cin,telephone:d.telephone,
-          email:d.email,adresse:d.adresse,ville:d.ville,
-          date_naissance:d.date_naissance||null,sexe:d.sexe,profession:d.profession
-        }).eq('id',id);
+        const {error}=await sb.from('clients').update(payload).eq('id',id);
         if(error)throw error;
       }else{
-        const {error}=await sb.from('clients').insert({
-          entreprise_id:db.entreprise.id,
-          nom_complet:d.nom_complet,nif_cin:d.nif_cin,telephone:d.telephone,
-          email:d.email,adresse:d.adresse,ville:d.ville,
-          date_naissance:d.date_naissance||null,sexe:d.sexe,profession:d.profession
-        });
+        const {error}=await sb.from('clients').insert({...payload, entreprise_id:db.entreprise.id});
         if(error)throw error;
       }
       toast('Client enregistré.');closeM();
@@ -519,6 +584,24 @@ const SUB={
       });
       toast('Paiement enregistré.');
     }catch(e){toast('Erreur : '+(e.message||''),1)}
+  },
+  async fent(f,d){
+    try{
+      const e=db.entreprise;if(!e)return;
+      let logo_url=e.logo_url;
+      const fileInput=f.querySelector('[name="logo_file"]');
+      if(fileInput&&fileInput.files&&fileInput.files[0]){
+        logo_url=await sbUploadLogo(e.id,fileInput.files[0]);
+      }
+      const {error}=await sb.from('entreprises').update({
+        nom:d.nom,slogan:d.slogan,adresse:d.adresse,telephone:d.telephone,
+        email:d.email,devise:d.devise,logo_url
+      }).eq('id',e.id);
+      if(error)throw error;
+      db.entreprise.logo_url=logo_url;
+      db.entreprise.nom=d.nom;
+      toast('Entreprise mise à jour.');closeM();
+    }catch(err){toast('Erreur : '+(err.message||''),1)}
   }
 };
 
@@ -527,7 +610,12 @@ const SUB={
    ============================================================ */
 const ACT={
   closeM, print:()=>print(),
-  async logout(){ await sbSignOut(); db={entreprise:null,user:null,clients:[],comptes:[],depots:[],retraits:[],transactions:[],prets:[],echeances:[],paiements_pret:[],garanties:[],types_compte:[],types_pret:[]}; if(realtimeChannel)await sb.removeChannel(realtimeChannel); render(); },
+  async logout(){
+    try{ await sbSignOut(); }catch(e){}
+    db={entreprise:null,user:null,clients:[],comptes:[],depots:[],retraits:[],transactions:[],prets:[],echeances:[],paiements_pret:[],garanties:[],types_compte:[],types_pret:[]};
+    if(realtimeChannel){ try{ await sb.removeChannel(realtimeChannel); }catch(e){} realtimeChannel=null; }
+    render();
+  },
   cform(id){
     const c=db.clients.find(x=>x.id===id)||{};
     modal(`<h2>${id?'Modifier client':'Nouveau client'}</h2><form id="fclient" class="form">
@@ -617,7 +705,7 @@ const ACT={
       <label>Description<input name="description"></label>
       <button class="btn big">Valider</button></form>`);
   },
-  async cent(){
+  cent(){
     const e=db.entreprise;if(!e)return;
     modal(`<h2>Configurer l'entreprise</h2><form id="fent" class="form">
       <label>Nom *<input name="nom" required value="${esc(e.nom||'')}"></label>
@@ -636,25 +724,6 @@ const ACT={
     db.prets.forEach(p=>{const cl=clientById(p.client_id);rows.push(['PRET',p.date_debut,cl?cl.nom_complet:'',p.montant,`Total=${p.montant_total} Reste=${p.solde_restant}`])});
     dl('ayifin.csv','\ufeff'+rows.map(r=>r.map(v=>`"${String(v??'').replace(/"/g,'""')}"`).join(';')).join('\n'),'text/csv');
   }
-};
-
-/* Formulaire entreprise */
-SUB.fent = async function(f,d){
-  try{
-    const e=db.entreprise;if(!e)return;
-    let logo_url=e.logo_url;
-    const fileInput=f.querySelector('[name="logo_file"]');
-    if(fileInput&&fileInput.files&&fileInput.files[0]){
-      logo_url=await sbUploadLogo(e.id,fileInput.files[0]);
-    }
-    const {error}=await sb.from('entreprises').update({
-      nom:d.nom,slogan:d.slogan,adresse:d.adresse,telephone:d.telephone,
-      email:d.email,devise:d.devise,logo_url
-    }).eq('id',e.id);
-    if(error)throw error;
-    db.entreprise.logo_url=logo_url;db.entreprise.nom=d.nom;
-    toast('Entreprise mise à jour.');closeM();
-  }catch(err){toast('Erreur : '+(err.message||''),1)}
 };
 
 /* ============================================================
@@ -699,17 +768,35 @@ document.addEventListener('submit', async e=>{
   if(typeof h!=='function'){toast('Formulaire inconnu.',1);return}
   const btn=f.querySelector('.big,button[type="submit"]');
   if(btn)btn.disabled=true;
-  try{ await h(f,Object.fromEntries(new FormData(f))); await loadAll(); render(); }
-  catch(err){ toast('Erreur : '+(err?.message||''),1); }
-  finally{ if(btn)btn.disabled=false; }
+  try{
+    await h(f,Object.fromEntries(new FormData(f)));
+    /* Ne pas recharger si c'est le login : initSession le fait déjà */
+    if(key!=='flogin' && db.user && db.entreprise){
+      await loadAll();
+    }
+    render();
+  }catch(err){
+    console.error('submit:',err);
+    toast('Erreur : '+(err?.message||''),1);
+  }finally{ if(btn)btn.disabled=false; }
 });
+
 document.addEventListener('click', e=>{
   if(e.target.id==='modal')return closeM();
   const b=e.target.closest('[data-a]');if(!b)return;
   const fn=ACT[b.dataset.a];
   if(typeof fn!=='function')return;
-  try{fn(b.dataset.id)}catch(err){toast('Erreur : '+(err?.message||''),1)}
+  try{
+    const r=fn(b.dataset.id);
+    if(r && typeof r.then==='function'){
+      r.then(async()=>{
+        if(db.user && db.entreprise){ await loadAll(); render(); }
+        else render();
+      }).catch(err=>toast('Erreur : '+(err?.message||''),1));
+    }
+  }catch(err){toast('Erreur : '+(err?.message||''),1)}
 });
+
 document.addEventListener('input', e=>{
   const t=e.target,n=t.dataset.f;if(!n)return;
   if(n==='theme'){localStorage.setItem(T,t.value);return theme()}
