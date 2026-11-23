@@ -3,8 +3,8 @@
    ⚠️ REMPLACEZ ces 2 constantes par vos vraies clés
    (Supabase → Settings → API) */
 
-const SUPABASE_URL = 'https://VOTRE-PROJET.supabase.co';
-const SUPABASE_ANON_KEY = 'VOTRE_ANON_KEY';
+const SUPABASE_URL = 'https://myqhbcdpaupphmepyufz.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_ORLo5kzk_L8q1OhD-6fFPQ_YIKJgcKu';
 
 let sb = null;
 
